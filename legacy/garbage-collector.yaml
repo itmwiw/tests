@@ -1,0 +1,124 @@
+# apiVersion: batch/v1beta1
+# kind: CronJob
+# metadata:
+#   name: garbage-collector
+
+
+# spec:
+#   startingDeadlineSeconds: 600
+#   concurrencyPolicy: Forbid
+#   schedule: "*/1 * * * *"
+#   jobTemplate:
+#     spec:
+#       backoffLimit: 0
+#       template:
+#         metadata:
+#           annotations:
+#             vault.security.banzaicloud.io/vault-addr: "https://central-vault.vault.apps.okd-production.gcp.internal.onehq.com"
+#             # TODO: Skip TLS verify to be removed
+#             vault.security.banzaicloud.io/vault-skip-verify: "true"
+#             # vault.security.banzaicloud.io/vault-tls-secret: vault-tls
+#             vault.security.banzaicloud.io/vault-role: "agencieshq-readonly"
+#             vault.security.banzaicloud.io/vault-path: "in-cluster"
+#             vault.security.banzaicloud.io/vault-auth-method: "jwt"               
+          
+#         spec:
+#           serviceAccountName: agencieshq-pipelines
+#           volumes:
+#           - name: workdir
+#             emptyDir: {}
+                
+#           - name: oidc-token
+#             projected:
+#               sources:
+#                 - serviceAccountToken:
+#                     path: oidc-token
+#                     expirationSeconds: 1800
+#           containers:
+#           - name: cleaner
+#             image: google/cloud-sdk:320.0.0
+#             volumeMounts:
+#             - name: workdir
+#               mountPath: /workdir
+#             - mountPath: /var/run/secrets/tokens
+#               name: oidc-token
+#             env:
+#             - name: "KUBERNETES_SERVICE_ACCOUNT_TOKEN"
+#               value: "/var/run/secrets/tokens/oidc-token"
+#             - name: "GCLOUD_SERVICE_ACCOUNT"
+#               value: "vault:secret/data/agencieshq#tekton-gke-admin"
+#             - name: GITHUB_BOT_TOKEN
+#               value: "vault:secret/data/agencieshq#github-api-bot-token"
+#             - name: GITHUB_BOT_USER
+#               value: "vault:secret/data/agencieshq#github-api-bot-user"
+#               imagePullPolicy: IfNotPresent
+#             command: 
+#             - bash
+#             args:
+#             - -ceo
+#             - pipefail
+#             - |
+#               export HOME=/workdir
+              
+#               cd ~/
+#               curl -JLO https://github.com/stedolan/jq/releases/download/jq-1.6/jq-linux64
+#               mv jq-linux64 jq
+#               chmod +x jq
+
+#               # Get open pull requests from Github
+#               curl --fail -s -u ${GITHUB_BOT_USER}:${GITHUB_BOT_TOKEN} https://api.github.com/repos/OneHQ/agencieshq/pulls | ./jq -c -r '.[].number' | sed 's/^/agencieshq-pr-/' > open-pr.txt
+#               sed 's/$/-pipeline/' open-pr.txt > open-pr-pipelines
+              
+#               # Remove PR pipelines
+#               touch pipeline-ns-to-be-removed.txt 
+
+#               kubectl get projects | 
+#                 awk '($1~/agencieshq-pr-[0-9]*-pipeline/){ system("if grep -q "$1" open-pr-pipelines; then echo \"Keeping "$1"... \" ; else echo \"Queuing "$1" to be removed...\"; echo "$1"\t"$10" >> pipeline-ns-to-be-removed.txt ; fi");}'
+
+#               awk '{
+
+#                   system("kubectl delete project "$1);
+#                 }' pipeline-ns-to-be-removed.txt
+
+
+#               # Remove instances
+#               echo $GCLOUD_SERVICE_ACCOUNT | base64 -d > ~/.kube/gke-credentials.json;
+#               gcloud auth activate-service-account --key-file ~/.kube/gke-credentials.json
+#               K8S_PROVIDER=gke
+#               K8S_CLUSTER_PROJECT=onehq-production
+#               K8S_CLUSTER_NAME=k8s-production-cluster-1
+#               K8S_CLUSTER_AZ=us-central1-a
+                      
+#               K8S_CLUSTER_FULLNAME="${K8S_PROVIDER}_${K8S_CLUSTER_PROJECT}_${K8S_CLUSTER_NAME}"
+              
+#               kubectl config set-cluster $K8S_CLUSTER_FULLNAME --server=https://$(gcloud container clusters describe ${K8S_CLUSTER_NAME} --zone ${K8S_CLUSTER_AZ} --project ${K8S_CLUSTER_PROJECT} --format json | ./jq -r -c '.endpoint')
+              
+#               gcloud container clusters describe ${K8S_CLUSTER_NAME} --zone ${K8S_CLUSTER_AZ} --project ${K8S_CLUSTER_PROJECT} --format json | ./jq -r -c '.masterAuth.clusterCaCertificate' | base64 --decode > ~/.kube/$K8S_CLUSTER_FULLNAME.ca.crt
+              
+#               kubectl config set-cluster $K8S_CLUSTER_FULLNAME --certificate-authority=$HOME/.kube/$K8S_CLUSTER_FULLNAME.ca.crt --embed-certs=true            
+              
+#               kubectl config set-credentials tekton-$K8S_CLUSTER_FULLNAME --token=$(gcloud config config-helper --format=json | ./jq -r -c '.credential.access_token')
+              
+#               kubectl config set-context $K8S_CLUSTER_FULLNAME --cluster=$K8S_CLUSTER_FULLNAME --user=tekton-$K8S_CLUSTER_FULLNAME --namespace=default
+              
+#               kubectl config use-context $K8S_CLUSTER_FULLNAME 
+
+#               # Generate list of instances to be removed
+
+#               touch to-be-removed.txt 
+              
+              
+
+
+             
+#               # Remove instances
+#               kubectl get ns | 
+#                 awk '($1~/agencieshq-pr-[0-9]*/){ system("if grep -q "$1" open-pr.txt; then echo \"Keeping "$1"... \" ; else echo \"Queuing "$1" to be removed...\"; echo "$1"\t"$10" >> to-be-removed.txt ; fi");}'
+#               awk '{
+#                 system("kubectl delete railsstack "$1" -n "$1);
+#                 system("kubectl delete namespace "$1);
+#               }' to-be-removed.txt
+
+#               # Remove pipelines
+
+#           restartPolicy: Never
